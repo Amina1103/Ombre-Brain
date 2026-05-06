@@ -571,7 +571,7 @@ class ImportEngine:
                 {"role": "system", "content": IMPORT_EXTRACT_PROMPT},
                 {"role": "user", "content": chunk_content[:12000]},
             ],
-            max_tokens=2048,
+            max_tokens=4096,
             temperature=0.0,
         )
 
