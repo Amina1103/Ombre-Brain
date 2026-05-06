@@ -32,7 +32,7 @@ class EmbeddingEngine:
         dehy_cfg = config.get("dehydration", {})
         embed_cfg = config.get("embedding", {})
 
-        self.api_key = (embed_cfg.get("api_key") or dehy_cfg.get("api_key") or "").strip()
+        self.api_key = (os.environ.get("OMBRE_EMBEDDING_API_KEY", "").strip() or embed_cfg.get("api_key") or dehy_cfg.get("api_key") or "").strip()
         self.base_url = (
             (embed_cfg.get("base_url") or "").strip()
             or (dehy_cfg.get("base_url") or "").strip()
