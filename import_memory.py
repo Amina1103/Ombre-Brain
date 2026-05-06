@@ -17,6 +17,7 @@
 
 import os
 import json
+import re
 import hashlib
 import logging
 from datetime import datetime
@@ -588,6 +589,8 @@ class ImportEngine:
         """Parse and validate LLM extraction result."""
         try:
             cleaned = raw.strip()
+            cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned).strip()
+            cleaned = cleaned.replace('</think>', '').strip()
             if cleaned.startswith("```"):
                 cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
             items = json.loads(cleaned)

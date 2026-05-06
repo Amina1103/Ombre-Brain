@@ -456,6 +456,8 @@ class Dehydrator:
             # Handle potential markdown code block wrapping
             # 处理可能的 markdown 代码块包裹
             cleaned = raw.strip()
+            cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned).strip()
+            cleaned = cleaned.replace('</think>', '').strip()
             if cleaned.startswith("```"):
                 cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
             result = json.loads(cleaned)
@@ -563,6 +565,8 @@ class Dehydrator:
         """
         try:
             cleaned = raw.strip()
+            cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned).strip()
+            cleaned = cleaned.replace('</think>', '').strip()
             if cleaned.startswith("```"):
                 cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
             items = json.loads(cleaned)
