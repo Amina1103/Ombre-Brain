@@ -431,7 +431,7 @@ class Dehydrator:
             model=self.model,
             messages=[
                 {"role": "system", "content": ANALYZE_PROMPT},
-                {"role": "user", "content": content[:2000]},
+                {"role": "user", "content": content[:10000]},
             ],
             max_tokens=256,
             temperature=0.1,
@@ -543,7 +543,7 @@ class Dehydrator:
             model=self.model,
             messages=[
                 {"role": "system", "content": DIGEST_PROMPT},
-                {"role": "user", "content": content[:5000]},
+                {"role": "user", "content": content[:20000]},
             ],
             max_tokens=8192,
             temperature=0.0,
