@@ -317,7 +317,7 @@ class Dehydrator:
             model=self.model,
             messages=[
                 {"role": "system", "content": DEHYDRATE_PROMPT},
-                {"role": "user", "content": content[:3000]},
+                {"role": "user", "content": content[:10000]},
             ],
             max_tokens=self.max_tokens,
             temperature=self.temperature,
@@ -335,7 +335,7 @@ class Dehydrator:
         Call LLM API for intelligent merge (via OpenAI-compatible client).
         调用 LLM API 执行智能合并。
         """
-        user_msg = f"旧记忆：\n{old_content[:2000]}\n\n新内容：\n{new_content[:2000]}"
+        user_msg = f"旧记忆：\n{old_content[:2000]}\n\n新内容：\n{new_content[:10000]}"
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
