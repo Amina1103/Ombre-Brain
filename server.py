@@ -790,6 +790,7 @@ async def hold(
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
+    logger.info(f"hold received: len={len(content)}, tail='{content[-80:]}'")
     if not content or not content.strip():
         return "内容为空，无法存储。"
 
