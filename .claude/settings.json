@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_breath.py\"",
-            "shell": "/bin/bash",
+            "shell": "bash",
             "timeout": 12,
             "statusMessage": "Ombre Brain 正在浮现记忆..."
           }
@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_breath.py\"",
-            "shell": "/bin/bash",
+            "shell": "bash",
             "timeout": 12,
             "statusMessage": "Ombre Brain 正在浮现记忆..."
           }

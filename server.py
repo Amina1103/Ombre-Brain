@@ -537,7 +537,8 @@ async def breath(
                 if token_used + t > max_tokens:
                     break
                 imp = b["metadata"].get("importance", 0)
-                results.append(f"[importance:{imp}] [bucket_id:{b['id']}] {summary}")
+                created = b["metadata"].get("created", "")[:10]
+                results.append(f"[importance:{imp}] [{created}] [bucket_id:{b['id']}] {summary}")
                 token_used += t
             except Exception as e:
                 logger.warning(f"importance_min dehydrate failed: {e}")
@@ -638,7 +639,8 @@ async def breath(
                     break
                 # NOTE: no touch() here — surfacing should NOT reset decay timer
                 score = decay_engine.calculate_score(b["metadata"])
-                dynamic_results.append(f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}")
+                created = b["metadata"].get("created", "")[:10]
+                dynamic_results.append(f"[权重:{score:.2f}] [{created}] [bucket_id:{b['id']}] {summary}")
                 token_budget -= summary_tokens
             except Exception as e:
                 logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")
@@ -732,9 +734,11 @@ async def breath(
                 break
             await bucket_mgr.touch(bucket["id"])
             if bucket.get("vector_match"):
-                summary = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
+                created = bucket["metadata"].get("created", "")[:10]
+                summary = f"[语义关联] [{created}] [bucket_id:{bucket['id']}] {summary}"
             else:
-                summary = f"[bucket_id:{bucket['id']}] {summary}"
+                created = bucket["metadata"].get("created", "")[:10]
+                summary = f"[{created}] [bucket_id:{bucket['id']}] {summary}"
             results.append(summary)
             token_used += summary_tokens
         except Exception as e:
