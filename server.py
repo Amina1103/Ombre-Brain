@@ -413,6 +413,53 @@ async def dream_hook(request):
 
 
 # =============================================================
+# /feel-hook endpoint: Dedicated hook for surfacing written feels
+# Feel 浮现专用挂载点 — 浮现你写过的 feel，最新在前
+#
+# Mirrors breath(domain="feel") but as a static HTTP hook so a backend
+# can fetch feels once per session and inject them as a static block.
+# Excludes pinned/protected so it never double-counts buckets already
+# surfaced as 核心准则 by /breath-hook.
+# 镜像 breath(domain="feel")，但做成静态 HTTP 挂载点，供后端每会话拉一次、
+# 作为静态块注入。排除 pinned/protected，避免和 /breath-hook 的核心准则重复。
+# =============================================================
+@mcp.custom_route("/feel-hook", methods=["GET"])
+async def feel_hook(request):
+    from starlette.responses import PlainTextResponse
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        feels = [
+            b for b in all_buckets
+            if b["metadata"].get("type") == "feel"
+            and not b["metadata"].get("pinned", False)
+            and not b["metadata"].get("protected", False)
+        ]
+        feels.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+        if not feels:
+            return PlainTextResponse("")
+
+        parts = []
+        token_budget = 6000
+        for f in feels:
+            created = f["metadata"].get("created", "")
+            entry = f"[{created}] {strip_wikilinks(f['content'])}"
+            t = count_tokens_approx(entry)
+            if t > token_budget:
+                break
+            parts.append(entry)
+            token_budget -= t
+
+        if not parts:
+            return PlainTextResponse("")
+        body_text = "[Ombre Brain - 你写过的 feel]\n" + "\n---\n".join(parts)
+        await _fire_webhook("feel_hook", {"surfaced": len(parts), "chars": len(body_text)})
+        return PlainTextResponse(body_text)
+    except Exception as e:
+        logger.warning(f"Feel hook failed: {e}")
+        return PlainTextResponse("")
+
+
+# =============================================================
 # Internal helper: merge-or-create
 # 内部辅助：检查是否可合并，可以则合并，否则新建
 # Shared by hold and grow to avoid duplicate logic
