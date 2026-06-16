@@ -335,10 +335,23 @@ async def breath_hook(request):
                       and not b["metadata"].get("protected")]
         scored = sorted(unresolved, key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
 
+        # Dehydrate one bucket concurrently-safe; failure → None, never kills the hook.
+        # 并发脱水单桶；单条失败返回 None，不再让整个 hook 崩成空（旧 bug：pinned 任一条炸 → 全丢）。
+        async def _safe_dehydrate(b):
+            try:
+                return await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
+            except Exception as e:
+                logger.warning(f"Breath hook dehydrate failed (bucket {b['id']}): {e}")
+                return None
+
         parts = []
         token_budget = 10000
-        for b in pinned:
-            summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
+
+        # Pinned/protected: always surface as core principles. 并发脱水，逐条容错。
+        pinned_summaries = await asyncio.gather(*[_safe_dehydrate(b) for b in pinned])
+        for summary in pinned_summaries:
+            if not summary:
+                continue
             parts.append(f"📌 [核心准则] {summary}")
             token_budget -= count_tokens_approx(summary)
 
@@ -352,10 +365,14 @@ async def breath_hook(request):
         # Hard cap: max 20 surfacing buckets in hook
         candidates = candidates[:20]
 
-        for b in candidates:
+        # Dehydrate candidates concurrently, then apply token budget in order.
+        # 并发脱水后按原顺序套 token 预算（顺序、预算逻辑不变，只是不再串行等）。
+        cand_summaries = await asyncio.gather(*[_safe_dehydrate(b) for b in candidates])
+        for summary in cand_summaries:
             if token_budget <= 0:
                 break
-            summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
+            if not summary:
+                continue
             summary_tokens = count_tokens_approx(summary)
             if summary_tokens > token_budget:
                 break
