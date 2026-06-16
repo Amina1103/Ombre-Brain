@@ -417,8 +417,9 @@ async def dream_hook(request):
         for b in recent:
             meta = b["metadata"]
             resolved_tag = "[已解决]" if meta.get("resolved", False) else "[未解决]"
+            created = meta.get("created", "")[:10]
             parts.append(
-                f"{meta.get('name', b['id'])} {resolved_tag} "
+                f"[{created}] {meta.get('name', b['id'])} {resolved_tag} "
                 f"V{meta.get('valence', 0.5):.1f}/A{meta.get('arousal', 0.3):.1f}\n"
                 f"{strip_wikilinks(b['content'][:200])}"
             )
