@@ -345,15 +345,14 @@ async def breath_hook(request):
                 return None
 
         parts = []
-        token_budget = 10000
 
-        # Pinned/protected: always surface as core principles. 并发脱水，逐条容错。
+        # Pinned/protected: always surface as core principles, in full.
+        # 核心准则无条件全进，且不占浮现预算（解耦：pinned 钉多少都不挤压浮现）。并发脱水，逐条容错。
         pinned_summaries = await asyncio.gather(*[_safe_dehydrate(b) for b in pinned])
         for summary in pinned_summaries:
             if not summary:
                 continue
             parts.append(f"📌 [核心准则] {summary}")
-            token_budget -= count_tokens_approx(summary)
 
         # Diversity: top-1 fixed + shuffle rest from top-20
         candidates = list(scored)
@@ -365,8 +364,11 @@ async def breath_hook(request):
         # Hard cap: max 20 surfacing buckets in hook
         candidates = candidates[:20]
 
+        # Surfacing gets its own dedicated budget, independent of pinned count.
+        # 浮现独立预算：6000 ≈ 4000 中文字，pinned 再多也不会饿死浮现。
+        token_budget = 6000
         # Dehydrate candidates concurrently, then apply token budget in order.
-        # 并发脱水后按原顺序套 token 预算（顺序、预算逻辑不变，只是不再串行等）。
+        # 并发脱水后按原顺序套 token 预算（不再串行等）。
         cand_summaries = await asyncio.gather(*[_safe_dehydrate(b) for b in candidates])
         for summary in cand_summaries:
             if token_budget <= 0:
