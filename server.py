@@ -420,7 +420,7 @@ async def dream_hook(request):
             created = meta.get("created", "")[:10]
             parts.append(
                 f"[{created}] {meta.get('name', b['id'])} {resolved_tag} "
-                f"V{meta.get('valence', 0.5):.1f}/A{meta.get('arousal', 0.3):.1f}\n"
+                f"V{meta.get('valence', 0.5):.1f}/A{meta.get('arousal', 0.3):.1f} #{b['id']}\n"
                 f"{strip_wikilinks(b['content'][:200])}"
             )
 
