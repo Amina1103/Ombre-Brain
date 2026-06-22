@@ -329,7 +329,7 @@ async def _merge_or_create_inner(
         rt.logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
         existing = []
 
-    if existing and existing[0].get("score", 0) > rt.config.get("merge_threshold", 75):
+    if existing and existing[0].get("score", 0) > (rt.config.get("merge_threshold") or 75):
         bucket = existing[0]
         # --- 不合并到钉选/保护桶 ---
         if not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):

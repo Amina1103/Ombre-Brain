@@ -749,7 +749,7 @@ class ImportEngine:
             )
             existing = []
 
-        merge_threshold = self.config.get("merge_threshold", _DEFAULT_MERGE_THRESHOLD)
+        merge_threshold = self.config.get("merge_threshold") or _DEFAULT_MERGE_THRESHOLD
 
         if existing and existing[0].get("score", 0) > merge_threshold:
             bucket = existing[0]

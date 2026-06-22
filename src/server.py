@@ -3157,8 +3157,11 @@ async def api_config_update(request: Request) -> Response:
 
     # --- Merge threshold ---
     if "merge_threshold" in body:
-        config["merge_threshold"] = int(body["merge_threshold"])
-        updated.append("merge_threshold")
+        try:
+            config["merge_threshold"] = int(body["merge_threshold"])
+            updated.append("merge_threshold")
+        except (TypeError, ValueError):
+            pass
 
     # --- Surfacing defaults (breath/feel token & result caps) ---
     if "surfacing" in body and isinstance(body["surfacing"], dict):
@@ -3205,7 +3208,10 @@ async def api_config_update(request: Request) -> Response:
                         sc_emb[key] = body["embedding"][key]
 
             if "merge_threshold" in body:
-                save_config["merge_threshold"] = int(body["merge_threshold"])
+                try:
+                    save_config["merge_threshold"] = int(body["merge_threshold"])
+                except (TypeError, ValueError):
+                    pass
 
             if "surfacing" in body and isinstance(body["surfacing"], dict):
                 sc_sf = save_config.setdefault("surfacing", {})

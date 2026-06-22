@@ -428,7 +428,10 @@ class Dehydrator:
             r.raise_for_status()
         data = r.json()
         content = data.get("content", [])
-        return content[0].get("text", "") if content else ""
+        if not content:
+            return ""
+        first = content[0]
+        return first.get("text", "") if isinstance(first, dict) else ""
 
     @staticmethod
     def _strip_md_fence(raw: str) -> str:
