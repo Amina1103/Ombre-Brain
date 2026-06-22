@@ -904,7 +904,7 @@ class BucketManager:
                 time_score = self._calc_time_score(meta)
 
                 # Dim 4: importance (direct normalization)
-                importance_score = max(1, min(10, int(meta.get("importance", 5)))) / 10.0
+                importance_score = max(1, min(10, int(meta.get("importance") or 5))) / 10.0
 
                 # Dim 5: touch frequency (召回频率, 0~1) — iter 2.1
                 touch_score = self._calc_touch_score(meta)
