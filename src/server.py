@@ -1455,12 +1455,30 @@ async def breath_hook(request):
             parts.append(f"📌 [核心准则] {summary}")
 
         # Diversity: top-1 fixed + shuffle rest from top-20
+        # Cyrus 定制：静态注入也尊重 surfacing.sampling 开关（与 breath 工具共用 Toolbox 那个开关）。
+        # 开启时把 top-20 池按 decay_score^(1/温度) 加权随机排序（高分更易靠前，温度控随机度），
+        # 替代均匀洗牌；块仍填满 6000 预算保持丰富度，只是"哪些记忆更容易进来"由权重决定。
         candidates = list(scored)
         if len(candidates) > 1:
             top1 = [candidates[0]]
             pool = candidates[1:min(20, len(candidates))]
-            random.shuffle(pool)
-            candidates = top1 + pool + candidates[min(20, len(candidates)):]
+            tail = candidates[min(20, len(candidates)):]
+            samp = (config.get("surfacing", {}) or {}).get("sampling", {}) or {}
+            if samp.get("enabled", False) and len(pool) > 1:
+                temp = max(0.1, float(samp.get("temperature") or 0.7))
+                try:
+                    w = [max(0.0001, decay_engine.calculate_score(b["metadata"])) ** (1.0 / temp) for b in pool]
+                    ordered, pc, wc = [], list(pool), list(w)
+                    while pc:
+                        i = random.choices(range(len(pc)), weights=wc, k=1)[0]
+                        ordered.append(pc.pop(i)); wc.pop(i)
+                    pool = ordered
+                except Exception as e:
+                    logger.warning(f"breath_hook weighted sampling fallback: {e}")
+                    random.shuffle(pool)
+            else:
+                random.shuffle(pool)
+            candidates = top1 + pool + tail
         # Hard cap: max 20 surfacing buckets in hook
         candidates = candidates[:20]
 
