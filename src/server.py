@@ -1467,11 +1467,13 @@ async def breath_hook(request):
         # Cyrus 定制：浮现独立预算 6000，与 pinned 数量解耦（pinned 再多也不会饿死浮现）。并发脱水后按序套预算。
         token_budget = 6000
         cand_summaries = await asyncio.gather(*[_safe_dehydrate(b) for b in candidates])
-        for summary in cand_summaries:
+        for b, summary in zip(candidates, cand_summaries):
             if token_budget <= 0:
                 break
             if not summary:
                 continue
+            created = b["metadata"].get("created", "")[:10]  # Cyrus 定制：浮现块也带创建日期
+            summary = f"[{created}] {summary}"
             summary_tokens = count_tokens_approx(summary)
             if summary_tokens > token_budget:
                 break
