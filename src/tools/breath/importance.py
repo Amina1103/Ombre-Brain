@@ -68,7 +68,8 @@ async def surface_by_importance(importance_min: int, max_tokens: int, tag_filter
             if token_used + t > max_tokens:
                 break
             imp = b["metadata"].get("importance", 0)
-            results.append(f"[importance:{imp}] [bucket_id:{b['id']}] {summary}")
+            created = b["metadata"].get("created", "")[:10]  # Cyrus 定制：带创建日期
+            results.append(f"[importance:{imp}] [{created}] [bucket_id:{b['id']}] {summary}")
             token_used += t
         except Exception as e:
             rt.logger.warning(f"importance_min bucket processing failed: {e}")

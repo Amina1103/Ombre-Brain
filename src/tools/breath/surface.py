@@ -197,7 +197,8 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
             if summary_tokens > token_budget:
                 break
             score = rt.decay_engine.calculate_score(b["metadata"])
-            dynamic_results.append(f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}")
+            created = b["metadata"].get("created", "")[:10]  # Cyrus 定制：带创建日期
+            dynamic_results.append(f"[权重:{score:.2f}] [{created}] [bucket_id:{b['id']}] {summary}")
             token_budget -= summary_tokens
         except Exception as e:
             rt.logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")

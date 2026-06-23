@@ -1438,12 +1438,21 @@ async def breath_hook(request):
                       and not b["metadata"].get("protected")]
         scored = sorted(unresolved, key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
 
+        # Cyrus 定制：并发脱水单桶，单条失败返 None 不让整个 hook 崩成空（根治 pinned 任一条炸→全丢）
+        async def _safe_dehydrate(b):
+            try:
+                return await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
+            except Exception as e:
+                logger.warning(f"Breath hook dehydrate failed (bucket {b['id']}): {e}")
+                return None
+
         parts = []
-        token_budget = 10000
-        for b in pinned:
-            summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
+        # Cyrus 定制：核心准则无条件全进，且不占浮现预算（pinned 钉多少都不挤压浮现）。并发脱水，逐条容错。
+        pinned_summaries = await asyncio.gather(*[_safe_dehydrate(b) for b in pinned])
+        for summary in pinned_summaries:
+            if not summary:
+                continue
             parts.append(f"📌 [核心准则] {summary}")
-            token_budget -= count_tokens_approx(summary)
 
         # Diversity: top-1 fixed + shuffle rest from top-20
         candidates = list(scored)
@@ -1455,10 +1464,14 @@ async def breath_hook(request):
         # Hard cap: max 20 surfacing buckets in hook
         candidates = candidates[:20]
 
-        for b in candidates:
+        # Cyrus 定制：浮现独立预算 6000，与 pinned 数量解耦（pinned 再多也不会饿死浮现）。并发脱水后按序套预算。
+        token_budget = 6000
+        cand_summaries = await asyncio.gather(*[_safe_dehydrate(b) for b in candidates])
+        for summary in cand_summaries:
             if token_budget <= 0:
                 break
-            summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
+            if not summary:
+                continue
             summary_tokens = count_tokens_approx(summary)
             if summary_tokens > token_budget:
                 break
@@ -1557,9 +1570,10 @@ async def dream_hook(request):
         for b in recent:
             meta = b["metadata"]
             resolved_tag = "[已解决]" if meta.get("resolved", False) else "[未解决]"
+            created = meta.get("created", "")[:10]  # Cyrus 定制：带日期戳
             parts.append(
-                f"{meta.get('name', b['id'])} {resolved_tag} "
-                f"V{float(meta.get('valence') or 0.5):.1f}/A{float(meta.get('arousal') or 0.3):.1f}\n"
+                f"[{created}] {meta.get('name', b['id'])} {resolved_tag} "
+                f"V{float(meta.get('valence') or 0.5):.1f}/A{float(meta.get('arousal') or 0.3):.1f} #{b['id']}\n"  # Cyrus 定制：行尾 #bucket_id 让静态注入可直接 resolve
                 f"{strip_wikilinks(b['content'][:200])}"
             )
 
@@ -1568,6 +1582,53 @@ async def dream_hook(request):
         return PlainTextResponse(body_text)
     except Exception as e:
         logger.warning(f"Dream hook failed: {e}")
+        return PlainTextResponse("")
+
+
+# =============================================================
+# /feel-hook endpoint: Dedicated hook for surfacing written feels (Cyrus 定制)
+# Feel 浮现专用挂载点 — 浮现你写过的 feel，最新在前
+#
+# Mirrors breath(domain="feel") but as a static HTTP hook so a backend
+# can fetch feels once per session and inject them as a static block.
+# Excludes pinned/protected so it never double-counts buckets already
+# surfaced as 核心准则 by /breath-hook.
+# 镜像 breath(domain="feel")，但做成静态 HTTP 挂载点，供后端每会话拉一次、
+# 作为静态块注入。排除 pinned/protected，避免和 /breath-hook 的核心准则重复。
+# =============================================================
+@mcp.custom_route("/feel-hook", methods=["GET"])
+async def feel_hook(request):
+    from starlette.responses import PlainTextResponse
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        feels = [
+            b for b in all_buckets
+            if b["metadata"].get("type") == "feel"
+            and not b["metadata"].get("pinned", False)
+            and not b["metadata"].get("protected", False)
+        ]
+        feels.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+        if not feels:
+            return PlainTextResponse("")
+
+        parts = []
+        token_budget = 6000
+        for f in feels:
+            created = f["metadata"].get("created", "")
+            entry = f"[{created}] {strip_wikilinks(f['content'])}"
+            t = count_tokens_approx(entry)
+            if t > token_budget:
+                break
+            parts.append(entry)
+            token_budget -= t
+
+        if not parts:
+            return PlainTextResponse("")
+        body_text = "[Ombre Brain - 你写过的 feel]\n" + "\n---\n".join(parts)
+        await _fire_webhook("feel_hook", {"surfaced": len(parts), "chars": len(body_text)})
+        return PlainTextResponse(body_text)
+    except Exception as e:
+        logger.warning(f"Feel hook failed: {e}")
         return PlainTextResponse("")
 
 
