@@ -1419,6 +1419,21 @@ async def api_embedding_local_pull_status(request: Request) -> Response:
     return JSONResponse({"ok": True, "pull": _ollama_pull_state})
 
 
+def _hook_auth(request):
+    """/breath-hook /dream-hook /feel-hook 的共享密钥门。这三个 hook 会吐记忆内容,
+    在公网(ombre.cyomb.org, DNS-only 无代理)上此前无鉴权裸奔。配了 OMBRE_HOOK_TOKEN
+    才校验 (灰度: 不配保持公开兼容旧后端, 后端与本服务两边都配好同一 token 即锁死)。
+    通过返回 None; 不通过返回 401。"""
+    from starlette.responses import PlainTextResponse
+    tok = os.environ.get("OMBRE_HOOK_TOKEN", "")
+    if not tok:
+        return None
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], tok):
+        return None
+    return PlainTextResponse("unauthorized", status_code=401)
+
+
 # =============================================================
 # /breath-hook endpoint: Dedicated hook for SessionStart
 # 会话启动专用挂载点
@@ -1426,6 +1441,9 @@ async def api_embedding_local_pull_status(request: Request) -> Response:
 @mcp.custom_route("/breath-hook", methods=["GET"])
 async def breath_hook(request):
     from starlette.responses import PlainTextResponse
+    _hk = _hook_auth(request)
+    if _hk is not None:
+        return _hk
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         # pinned
@@ -1572,6 +1590,9 @@ async def breath_hook(request):
 @mcp.custom_route("/dream-hook", methods=["GET"])
 async def dream_hook(request):
     from starlette.responses import PlainTextResponse
+    _hk = _hook_auth(request)
+    if _hk is not None:
+        return _hk
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         candidates = [
@@ -1619,6 +1640,9 @@ async def dream_hook(request):
 @mcp.custom_route("/feel-hook", methods=["GET"])
 async def feel_hook(request):
     from starlette.responses import PlainTextResponse
+    _hk = _hook_auth(request)
+    if _hk is not None:
+        return _hk
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         feels = [
