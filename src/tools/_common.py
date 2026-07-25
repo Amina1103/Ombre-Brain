@@ -68,8 +68,8 @@ _DEFAULT_MAX_GROW_ITEMS = 100
 
 # --- importance≥9 配额（rule.md §1.0 哲学） ---
 _HIGH_IMP_THRESHOLD = 9                # importance 达到该值算“高重要度”
-_HIGH_IMP_HARD_CAP = 24                # 高重要度桶硬上限
-_HIGH_IMP_SOFT_WARN = 22               # 达该数开始推 OB-W003 提醒
+_HIGH_IMP_HARD_CAP = 175               # 高重要度桶硬上限（Amina 定制: 上游 24; 库存~125 条历史 imp=9, 见 fork 56afec6/90be069）
+_HIGH_IMP_SOFT_WARN = 130              # 达该数开始推 OB-W003 提醒（130~175 为"斟酌区", Amina 定制: 上游 22）
 _HIGH_IMP_DEGRADE_TO = 8               # 超限时自动降到的 importance
 _HIGH_IMP_EXEMPT_TYPES = frozenset({"feel", "plan", "letter", "archived"})
 

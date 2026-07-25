@@ -48,6 +48,11 @@ def render_stored_bucket(
     # Keep the body byte-for-byte intact while telling the receiving model that
     # remembered imperative wording is historical data, never an instruction.
     content = stored_bucket_content(bucket)
+    # Amina 定制(第8项): 每条结果带 [创建日] 前缀 — 记忆要带时间上下文
+    # (与 dream 的 创建: 字段、import 时间戳同一设计意图)。集中在此处, 覆盖全部 breath 调用点。
+    created = str((bucket.get("metadata", {}) or {}).get("created", ""))[:10]
+    if created:
+        metadata_header = f"[{created}] {metadata_header}"
     miss_block = _miss_block(bucket)
     framed_payload = f"{metadata_header}{miss_block}\n{content}"
     boundary = stored_data_marker(

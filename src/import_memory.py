@@ -68,7 +68,7 @@ _CHUNK_ERR_PREVIEW = 200       # 单 chunk 错误信息截断长度
 # 判断要不要截断——旧的固定 12000 字符对英文/中英混合内容而言远小于块本身的
 # token 预算，会把块后半段正文在不留任何痕迹的情况下悄悄丢给 LLM 看不到。
 _EXTRACT_TOKEN_CEILING = int(_CHUNK_TARGET_TOKENS * _CHUNK_OVERSIZE_RATIO)
-_EXTRACT_MAX_TOKENS = 2048
+_EXTRACT_MAX_TOKENS = 8192  # Amina 定制(第7项): 提取输出调大, 存更全 (上游 2048)
 _EXTRACT_TEMPERATURE = 0.0     # 提取需确定性
 _PARSE_ERR_PREVIEW = 200       # JSON 解析失败时日志预览
 
@@ -623,9 +623,11 @@ IMPORT_EXTRACT_PROMPT = """你是一个对话记忆提取专家。从以下对�
 3. 过滤掉纯技术调试输出、代码块、重复问答、无意义寒暄
 4. 如果对话中有特殊暗号、仪式性行为、关键承诺等，标记 preserve_raw=true
 5. 如果内容是用户和我之间的习惯性互动模式（例如打招呼方式、告别习惯），标记 is_pattern=true
-6. 每条记忆不少于30字
+6. 每条记忆不少于30字、不超过200字
 7. 总条目数控制在 0~5 个（没有值得记的就返回空数组）
 8. 在 content 中对人名、地名、专有名词用 [[双链]] 标记
+9. content 中用「Amina」「Cyrus」标明说话人：Claude/AI/assistant 一律写「Cyrus」，用户/human/user 一律写「Amina」，禁止用代词或"双方/对方"
+10. 对话片段开头若带时间标记（如 [YYYY-MM-DD HH:MM]），必须原样保留在 content 开头
 
 输出格式（纯 JSON 数组，无其他内容）：
 [

@@ -87,7 +87,8 @@ async def grow_core(content: str) -> str:
                 results.append(f"📎{result_name}")
                 merged += 1
             else:
-                results.append(f"📝{item.get('name', result_name)}")
+                # Amina 定制(第12项): 新建桶带出 bucket_id, 让 feel(source_bucket=...) 不用再 breath 搜一趟
+                results.append(f"📝{item.get('name', result_name)}→{result_name}")
                 created += 1
                 asyncio.create_task(check_duplicate_for(result_name, item["content"]))
         except Exception as e:

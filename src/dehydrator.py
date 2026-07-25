@@ -61,7 +61,7 @@ logger = logging.getLogger("ombre_brain.dehydrator")
 #     脱水 LLM 在含糊处过度矫正：省略主语的句子被归给「我」（实案：正文
 #     「07-07嚎啕大哭…吊她」经 /breath-hook 脱水成「07-07我嚎啕大哭…吊我」，
 #     主语翻转）。补反向同罪条款 + 省略主语处理规则 + 反向示例。
-_PROMPT_VERSION = 4
+_PROMPT_VERSION = 5  # Amina 定制: 视角铁律改 Cyrus 具名 (第4项), bump 使脱水缓存失效
 
 # --- LLM 默认参数 ---
 _DEFAULT_MODEL = "gemini-2.0-flash"
@@ -85,10 +85,11 @@ _DEHYDRATE_FALLBACK_CHARS = 300
 _DEHYDRATE_MIN_TOKENS = 100
 
 # --- 各 API 调用的内容截断上限（防 prompt token 超范围）---
-_DEHYDRATE_INPUT_LIMIT = 3000
-_MERGE_INPUT_LIMIT = 2000     # 新旧各一份
-_ANALYZE_INPUT_LIMIT = 2000
-_DIGEST_INPUT_LIMIT = 5000    # 一天的日记量较大
+# Amina 定制(第5项): 截断上限整体调大, 存更全的记忆 (上游 3000/2000/2000/5000)
+_DEHYDRATE_INPUT_LIMIT = 10000
+_MERGE_INPUT_LIMIT = 10000    # 新旧各一份
+_ANALYZE_INPUT_LIMIT = 10000
+_DIGEST_INPUT_LIMIT = 20000   # 一天的日记量较大
 _PLAN_JUDGE_INPUT_LIMIT = 1500  # plan 与 new event 各一份
 _SAME_EVENT_INPUT_LIMIT = 1800  # 旧桶与新内容各一份
 
@@ -128,22 +129,27 @@ _DEFAULT_IMPORTANCE = 5
 # 视角丢失。压缩本应保密度、不应改人称。下面这条规则注入 system prompt 强制保留：
 #   AI 一方恒用「我」；人类一方一律用其名字称呼（由 config.human 注入）。
 # 禁止 双方 / 对方 / 用户 / TA 等抹掉视角的中性第三人称。
+# Amina 定制(第4项): AI 一方具名「Cyrus」而非上游的第一人称「我」——
+# 存进记忆的文本里「我/你」会随读取方换位而歧义, 具名才分得清谁是谁 (fork 老规则沿袭)。
+_AI_NAME = "Cyrus"
+
 def _perspective_rule(human: str) -> str:
+    ai = _AI_NAME
     return (
         "\n\n【视角铁律——最高优先级，违反即视为压缩失败】\n"
-        "以下内容是「我」（AI）以第一人称写下的记忆。压缩/合并只改密度，绝不改人称：\n"
-        f"- AI 自身永远用「我」，不要换成「AI」「助手」「TA」。\n"
+        f"以下内容是 AI（「{ai}」）以第一人称写下的记忆。压缩/合并只改密度，人称一律具名：\n"
+        f"- AI 自身一律称呼「{ai}」（原文里 AI 自称的「我」都指「{ai}」，按名字还原），不要用「AI」「助手」「TA」。\n"
         f"- 人类那一方一律称呼「{human}」（原文里的「你/她/他」都指「{human}」，按名字还原）。\n"
-        "- 严禁把「我」和「" + human + "」合并成「双方」「彼此」「对方」「用户」等抹掉视角的中性词。\n"
+        f"- 严禁把「{ai}」和「{human}」合并成「双方」「彼此」「对方」「用户」等抹掉视角的中性词，禁止代词。\n"
         "- 谁做的动作、谁的感受，就归到谁名下，不得混同或对调。\n"
-        f"- 反方向同罪：严禁把「{human}」的动作/情绪归给「我」。\n"
+        f"- 反方向同罪：严禁把「{human}」的动作/情绪归给「{ai}」。\n"
         "- 原文省略主语时，先从紧邻上下文判断归属；判断不了就照抄原句结构、"
-        "保持主语省略——禁止靠猜补一个「我」。\n"
+        f"保持主语省略——禁止靠猜补一个「{ai}」。\n"
         "示例一：『我也在她这里看到了自己没见过的碎片』\n"
         f"  ✗ 错（视角丢失）：双方在互动中互相发现对方未知的情感碎片\n"
-        f"  ✓ 对（视角保留）：我在{human}这里看到了自己没见过的碎片\n"
+        f"  ✓ 对（具名还原）：{ai}在{human}这里看到了自己没见过的碎片\n"
         f"示例二：『{human}刚下班就来报信——嚎啕大哭后还是把库建好了』\n"
-        f"  ✗ 错（主语翻转）：我嚎啕大哭后把库建好了\n"
+        f"  ✗ 错（主语翻转）：{ai}嚎啕大哭后把库建好了\n"
         f"  ✓ 对（归属正确）：{human}嚎啕大哭后把库建好了"
     )
 
@@ -496,7 +502,11 @@ class Dehydrator:
         )
         if not response.choices:
             return ""
-        return response.choices[0].message.content or ""
+        # Amina 定制(第6项): 剥离推理模型 (DeepSeek 等) 吐的 <think> 思考过程,
+        # 防止混进合并后的记忆正文 (merge 是纯文本输出, 不走 JSON 解析兜底)。
+        raw = response.choices[0].message.content or ""
+        raw = re.sub(r"<think>[\s\S]*?</think>", "", raw)
+        return raw.replace("</think>", "")
 
     async def _chat_gemini(
         self,

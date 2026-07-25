@@ -4,8 +4,11 @@ web/hooks.py — breath 浮现挂载点（HTTP hook）
 ========================================
 
 - /breath-hook：对话开头由外部 hook 拉取，返回应浮现的记忆（pinned + 未解决采样）
+- /dream-hook：最近记忆（Amina 定制, 逆上游"dream 不是义务"哲学重加, 带 [创建日]+#bucket_id）
+- /feel-hook：写过的 feel 最新在前（Amina 定制, 上游没有此端点）
 
-不提供 /dream-hook：dream 按哲学不是义务、不该每次开场自动触发（详见下方端点处注释）。
+本文件含 Amina fork 定制（第1c/2/3/10项）：pinned 无条件全进不占预算、浮现独立 6000 预算
++ 加权采样 + 日期前缀、dream/feel 双端点。上游 rebase 时须保住。
 
 给外部 SessionStart hook / 自动化用；默认需要 Dashboard 登录态或 hook token。
 通过 sh.fire_webhook 推送事件。
@@ -262,7 +265,9 @@ def register(mcp) -> None:
 
         timeout_seconds = setting_int("timeout_seconds", 45, 5, 120)
         per_call_timeout = setting_int("dehydrate_timeout_seconds", 12, 2, 30)
-        max_dehydrate_calls = setting_int("max_dehydrate_calls", 8, 0, 32)
+        # Amina 定制(第1c项): 默认 8→20 — 浮现候选硬上限就是 20, 次数上限别把它掐得比候选池还小
+        # (pinned 另有豁免, 见下)。config hooks.max_dehydrate_calls 仍可覆盖。
+        max_dehydrate_calls = setting_int("max_dehydrate_calls", 20, 0, 32)
         token_budget = setting_int("max_tokens", 10_000, 500, 50_000)
         no_store_headers = {
             "Cache-Control": "no-store",
@@ -325,16 +330,18 @@ def register(mcp) -> None:
                     remaining -= cost
                     return True
 
-                async def append_summary(bucket: dict, *, role: str, prefix: str) -> bool:
+                async def dehydrated_block(bucket: dict, *, role: str, prefix: str, capped: bool):
+                    """脱水+装框, 返回 block 文本或 None (空正文/失败降级仍返回块)。
+                    capped=是否计入 max_dehydrate_calls — Amina 定制(第1c项): pinned 豁免次数上限,
+                    只有浮现计数。串行+单桶超时+失败降级原文截断 = 沿用上游。"""
                     nonlocal dehydrate_calls
-                    if remaining < _HOOK_MIN_BLOCK_TOKENS:
-                        return False
                     raw = strip_wikilinks(str(bucket.get("content") or ""))
                     if not raw:
-                        return True
-                    if dehydrate_calls >= max_dehydrate_calls:
-                        return False
-                    dehydrate_calls += 1
+                        return None
+                    if capped:
+                        if dehydrate_calls >= max_dehydrate_calls:
+                            return None
+                        dehydrate_calls += 1
                     truncated = False
                     try:
                         summary = await asyncio.wait_for(
@@ -356,34 +363,71 @@ def register(mcp) -> None:
                     if not summary:
                         summary = raw[:1200]
                         truncated = len(summary) < len(raw)
-                    block = _hook_data_block(
+                    return _hook_data_block(
                         bucket,
                         prefix + summary,
                         role=role,
                         content_truncated=truncated,
                     )
-                    return append_block(block)
 
+                # Amina 定制(第1c项): 核心准则无条件全进 — 不占任何 token 预算、不受脱水次数上限,
+                # pinned 钉多少条都不挤压浮现 (fork 沿袭, 见 project_ombre_breath_hook_pinned)。
                 for bucket in pinned:
-                    if not await append_summary(
-                        bucket,
-                        role="core_memory_summary",
-                        prefix="📌 [核心准则] ",
-                    ):
-                        break
+                    block = await dehydrated_block(
+                        bucket, role="core_memory_summary", prefix="📌 [核心准则] ", capped=False,
+                    )
+                    if block:
+                        parts.append(block)
 
+                # Amina 定制(第10项): 浮现候选尊重 surfacing.sampling 开关 (与 breath 工具共用
+                # Toolbox 开关): 开启时 top-20 池按 decay_score^(1/温度) 加权随机排序替代均匀洗牌。
                 candidates = list(scored)
                 if len(candidates) > 1:
+                    top1 = [candidates[0]]
                     pool = candidates[1:min(20, len(candidates))]
-                    random.shuffle(pool)
-                    candidates = [candidates[0], *pool]
-                for bucket in candidates[:20]:
-                    if not await append_summary(
+                    samp = ((getattr(sh, "config", {}) or {}).get("surfacing") or {}).get("sampling") or {}
+                    if samp.get("enabled", False) and len(pool) > 1:
+                        temp = max(0.1, float(samp.get("temperature") or 0.7))
+                        try:
+                            weights = [
+                                max(0.0001, sh.decay_engine.calculate_score(b["metadata"])) ** (1.0 / temp)
+                                for b in pool
+                            ]
+                            ordered, pc, wc = [], list(pool), list(weights)
+                            while pc:
+                                i = random.choices(range(len(pc)), weights=wc, k=1)[0]
+                                ordered.append(pc.pop(i))
+                                wc.pop(i)
+                            pool = ordered
+                        except Exception as exc:
+                            logger.warning("breath_hook weighted sampling fallback: %s", exc)
+                            random.shuffle(pool)
+                    else:
+                        random.shuffle(pool)
+                    candidates = [*top1, *pool]
+                candidates = candidates[:20]
+
+                # Amina 定制(第1c项): 浮现独立预算 6000, 与 pinned 完全解耦; 每条带 [创建日] 前缀。
+                surf_remaining = 6000
+                for bucket in candidates:
+                    if surf_remaining < _HOOK_MIN_BLOCK_TOKENS:
+                        break
+                    if dehydrate_calls >= max_dehydrate_calls:
+                        break
+                    created = str(bucket["metadata"].get("created", ""))[:10]
+                    block = await dehydrated_block(
                         bucket,
                         role="surfaced_memory_summary",
-                        prefix="",
-                    ):
+                        prefix=f"[{created}] " if created else "",
+                        capped=True,
+                    )
+                    if block is None:
+                        continue
+                    cost = count_tokens_approx(block) + 2
+                    if cost > surf_remaining:
                         break
+                    parts.append(block)
+                    surf_remaining -= cost
 
                 letters = [
                     bucket for bucket in all_buckets
@@ -493,7 +537,107 @@ def register(mcp) -> None:
         finally:
             _hook_slots.release()
 
-    # 注意：这里**故意不再提供 /dream-hook**。
-    # 按 OB 的设计哲学，dream（做梦消化）不是义务、不该在每次会话开始被自动触发——
-    # 它只应在「需要消化时」由模型主动调用 MCP 的 dream 工具。把它做成 SessionStart hook
-    # 会把「主动消化」异化成「每次开场的强制动作」，与哲学冲突，故移除该端点。
+    # 上游立场: 故意不提供 /dream-hook (dream 不是义务, 不该开场自动触发)。
+    # Amina 定制(第2项, 有意逆上游哲学): 静默注入管线需要它 — Cyrus-Home 后端每会话拉一次
+    # 最近记忆做静态块, 替代开场三连。行格式带 [创建日] 前缀 + 行尾 #bucket_id (可直接 resolve)。
+    @mcp.custom_route("/dream-hook", methods=["GET"])
+    async def dream_hook(request):
+        from starlette.responses import PlainTextResponse
+        if not _is_hook_request_authorized(request):
+            return PlainTextResponse("", status_code=401)
+        if not _admit_hook_request(request):
+            return PlainTextResponse("", status_code=429, headers={"Retry-After": "60"})
+        no_store_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        try:
+            all_buckets = await sh.bucket_mgr.list_all(include_archive=False)
+            candidates = [
+                b for b in all_buckets
+                if b["metadata"].get("type") not in ("permanent", "feel", "plan", "letter", "self", "i")
+                and not b["metadata"].get("pinned", False)
+                and not b["metadata"].get("protected", False)
+            ]
+            candidates.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+            recent = candidates[:10]
+            if not recent:
+                return PlainTextResponse("", headers=no_store_headers)
+
+            parts = []
+            for b in recent:
+                meta = b["metadata"]
+                resolved_tag = "[已解决]" if meta.get("resolved", False) else "[未解决]"
+                created = str(meta.get("created", ""))[:10]
+                parts.append(
+                    f"[{created}] {meta.get('name', b['id'])} {resolved_tag} "
+                    f"V{float(meta.get('valence') or 0.5):.1f}/A{float(meta.get('arousal') or 0.3):.1f} #{b['id']}\n"
+                    f"{strip_wikilinks(str(b.get('content') or '')[:200])}"
+                )
+
+            body_text = "[Ombre Brain - Dreaming]\n" + "\n---\n".join(parts)
+            try:
+                await asyncio.wait_for(
+                    sh.fire_webhook("dream_hook", {"surfaced": len(parts), "chars": len(body_text)}),
+                    timeout=3,
+                )
+            except Exception as exc:
+                logger.warning("dream_hook telemetry failed: %s", exc)
+            return PlainTextResponse(body_text, headers=no_store_headers)
+        except Exception as e:
+            logger.warning(f"Dream hook failed: {e}")
+            return PlainTextResponse("", headers=no_store_headers)
+
+    # Amina 定制(第3项): /feel-hook — 浮现写过的 feel (最新在前), 供后端每会话拉一次做静态块。
+    # 排除 pinned/protected, 避免与 /breath-hook 的核心准则重复。预算读 config surfacing.feel_max_tokens。
+    @mcp.custom_route("/feel-hook", methods=["GET"])
+    async def feel_hook(request):
+        from starlette.responses import PlainTextResponse
+        if not _is_hook_request_authorized(request):
+            return PlainTextResponse("", status_code=401)
+        if not _admit_hook_request(request):
+            return PlainTextResponse("", status_code=429, headers={"Retry-After": "60"})
+        no_store_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        try:
+            all_buckets = await sh.bucket_mgr.list_all(include_archive=False)
+            feels = [
+                b for b in all_buckets
+                if b["metadata"].get("type") == "feel"
+                and not b["metadata"].get("pinned", False)
+                and not b["metadata"].get("protected", False)
+            ]
+            feels.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+            if not feels:
+                return PlainTextResponse("", headers=no_store_headers)
+
+            try:
+                feel_budget = int(((getattr(sh, "config", {}) or {}).get("surfacing") or {}).get("feel_max_tokens", 6000))
+            except (TypeError, ValueError):
+                feel_budget = 6000
+            parts = []
+            for f in feels:
+                created = f["metadata"].get("created", "")
+                entry = f"[{created}] {strip_wikilinks(str(f.get('content') or ''))}"
+                t = count_tokens_approx(entry)
+                if t > feel_budget:
+                    break
+                parts.append(entry)
+                feel_budget -= t
+
+            if not parts:
+                return PlainTextResponse("", headers=no_store_headers)
+            body_text = "[Ombre Brain - 你写过的 feel]\n" + "\n---\n".join(parts)
+            try:
+                await asyncio.wait_for(
+                    sh.fire_webhook("feel_hook", {"surfaced": len(parts), "chars": len(body_text)}),
+                    timeout=3,
+                )
+            except Exception as exc:
+                logger.warning("feel_hook telemetry failed: %s", exc)
+            return PlainTextResponse(body_text, headers=no_store_headers)
+        except Exception as e:
+            logger.warning(f"Feel hook failed: {e}")
+            return PlainTextResponse("", headers=no_store_headers)
