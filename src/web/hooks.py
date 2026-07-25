@@ -263,7 +263,9 @@ def register(mcp) -> None:
                 value = default
             return max(minimum, min(maximum, value))
 
-        timeout_seconds = setting_int("timeout_seconds", 45, 5, 120)
+        # Amina 定制(第1c项补): 总限时默认 45→90 — pinned~20+浮现~20 的体量, 上游串行 45s
+        # 必 504 (2026-07-25 部署实测)。配合下方有限并发, 90s 足够冷缓存整轮跑完。
+        timeout_seconds = setting_int("timeout_seconds", 90, 5, 180)
         per_call_timeout = setting_int("dehydrate_timeout_seconds", 12, 2, 30)
         # Amina 定制(第1c项): 默认 8→20 — 浮现候选硬上限就是 20, 次数上限别把它掐得比候选池还小
         # (pinned 另有豁免, 见下)。config hooks.max_dehydrate_calls 仍可覆盖。
@@ -319,7 +321,6 @@ def register(mcp) -> None:
                 )
                 remaining = token_budget - count_tokens_approx(header)
                 parts: list[str] = []
-                dehydrate_calls = 0
 
                 def append_block(block: str) -> bool:
                     nonlocal remaining
@@ -330,35 +331,33 @@ def register(mcp) -> None:
                     remaining -= cost
                     return True
 
-                async def dehydrated_block(bucket: dict, *, role: str, prefix: str, capped: bool):
-                    """脱水+装框, 返回 block 文本或 None (空正文/失败降级仍返回块)。
-                    capped=是否计入 max_dehydrate_calls — Amina 定制(第1c项): pinned 豁免次数上限,
-                    只有浮现计数。串行+单桶超时+失败降级原文截断 = 沿用上游。"""
-                    nonlocal dehydrate_calls
+                # Amina 定制(第1c项补): 有限并发脱水 — 上游刻意串行, 但她 pinned~20+浮现~20 的
+                # 体量串行必超时 (2026-07-25 部署实测 504)。信号量限 10 路并发折中: 不回到 fork
+                # 无上限 gather 的莽干, 又能在总限时内跑完。单桶超时+失败降级原文截断沿用上游。
+                deh_sem = asyncio.Semaphore(10)
+
+                async def dehydrated_block(bucket: dict, *, role: str, prefix: str):
                     raw = strip_wikilinks(str(bucket.get("content") or ""))
                     if not raw:
                         return None
-                    if capped:
-                        if dehydrate_calls >= max_dehydrate_calls:
-                            return None
-                        dehydrate_calls += 1
                     truncated = False
-                    try:
-                        summary = await asyncio.wait_for(
-                            sh.dehydrator.dehydrate(
-                                raw,
-                                {
-                                    key: value
-                                    for key, value in (bucket.get("metadata") or {}).items()
-                                    if key != "tags"
-                                },
-                            ),
-                            timeout=per_call_timeout,
-                        )
-                    except Exception as exc:
-                        logger.warning("breath_hook dehydration failed: %s", exc)
-                        summary = raw[:1200]
-                        truncated = len(summary) < len(raw)
+                    async with deh_sem:
+                        try:
+                            summary = await asyncio.wait_for(
+                                sh.dehydrator.dehydrate(
+                                    raw,
+                                    {
+                                        key: value
+                                        for key, value in (bucket.get("metadata") or {}).items()
+                                        if key != "tags"
+                                    },
+                                ),
+                                timeout=per_call_timeout,
+                            )
+                        except Exception as exc:
+                            logger.warning("breath_hook dehydration failed: %s", exc)
+                            summary = raw[:1200]
+                            truncated = len(summary) < len(raw)
                     summary = str(summary or "").strip()
                     if not summary:
                         summary = raw[:1200]
@@ -372,12 +371,11 @@ def register(mcp) -> None:
 
                 # Amina 定制(第1c项): 核心准则无条件全进 — 不占任何 token 预算、不受脱水次数上限,
                 # pinned 钉多少条都不挤压浮现 (fork 沿袭, 见 project_ombre_breath_hook_pinned)。
-                for bucket in pinned:
-                    block = await dehydrated_block(
-                        bucket, role="core_memory_summary", prefix="📌 [核心准则] ", capped=False,
-                    )
-                    if block:
-                        parts.append(block)
+                pinned_blocks = await asyncio.gather(*(
+                    dehydrated_block(b, role="core_memory_summary", prefix="📌 [核心准则] ")
+                    for b in pinned
+                ))
+                parts.extend(block for block in pinned_blocks if block)
 
                 # Amina 定制(第10项): 浮现候选尊重 surfacing.sampling 开关 (与 breath 工具共用
                 # Toolbox 开关): 开启时 top-20 池按 decay_score^(1/温度) 加权随机排序替代均匀洗牌。
@@ -408,21 +406,25 @@ def register(mcp) -> None:
                 candidates = candidates[:20]
 
                 # Amina 定制(第1c项): 浮现独立预算 6000, 与 pinned 完全解耦; 每条带 [创建日] 前缀。
-                surf_remaining = 6000
-                for bucket in candidates:
-                    if surf_remaining < _HOOK_MIN_BLOCK_TOKENS:
-                        break
-                    if dehydrate_calls >= max_dehydrate_calls:
-                        break
-                    created = str(bucket["metadata"].get("created", ""))[:10]
-                    block = await dehydrated_block(
-                        bucket,
+                # 次数上限只约束浮现: 预先裁剪候选数, 然后并发脱水、按分数序套预算。
+                candidates = candidates[:max_dehydrate_calls]
+                cand_blocks = await asyncio.gather(*(
+                    dehydrated_block(
+                        b,
                         role="surfaced_memory_summary",
-                        prefix=f"[{created}] " if created else "",
-                        capped=True,
+                        prefix=(
+                            f"[{str(b['metadata'].get('created', ''))[:10]}] "
+                            if b["metadata"].get("created") else ""
+                        ),
                     )
+                    for b in candidates
+                ))
+                surf_remaining = 6000
+                for block in cand_blocks:
                     if block is None:
                         continue
+                    if surf_remaining < _HOOK_MIN_BLOCK_TOKENS:
+                        break
                     cost = count_tokens_approx(block) + 2
                     if cost > surf_remaining:
                         break
