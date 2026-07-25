@@ -574,7 +574,7 @@ def register(mcp) -> None:
                 parts.append(
                     f"[{created}] {meta.get('name', b['id'])} {resolved_tag} "
                     f"V{float(meta.get('valence') or 0.5):.1f}/A{float(meta.get('arousal') or 0.3):.1f} #{b['id']}\n"
-                    f"{strip_wikilinks(str(b.get('content') or '')[:200])}"
+                    f"{strip_wikilinks(str(b.get('content') or '')[:500])}"
                 )
 
             body_text = "[Ombre Brain - Dreaming]\n" + "\n---\n".join(parts)
