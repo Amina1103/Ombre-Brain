@@ -133,24 +133,25 @@ async def grow_items(items: list) -> str:
         return "items 为空或都不合法，未创建任何桶。"
 
     batch_id = f"g_{uuid.uuid4().hex[:12]}"
-    results = []
-    created = 0
-    merged = 0
-    embed_warnings = []
 
-    metadata_fallback = False
-    for content_str in clean:
-        try:
+    # Amina 定制: 逐条串行时每条要等一次 analyze LLM 调用（单次可达 60s），
+    # N 条相加轻松超过 MCP 客户端超时 → 写入成功但返回被掐断。
+    # 改为有限并发（与 hooks 的脱水修法同款），总耗时 ≈ 最慢一条。
+    sem = asyncio.Semaphore(8)
+
+    async def _process_one(content_str: str) -> tuple[str, str, bool, bool]:
+        """返回 (结果行, embed警告, 是否合并, 是否打标降级)；结果行以 ⚠ 开头表示未入库。"""
+        async with sem:
+            fallback = False
             size_err = check_content_size(content_str)
             if size_err:
-                results.append(f"⚠️（{size_err}）")
-                continue
+                return f"⚠️（{size_err}）", "", False, False
             # 只打标，不改写正文；打标失败（如 API key 未配置）不应丢正文——
             # 落回本地中性元数据，与 hold 的降级行为保持一致（见 tools/hold/core.py）。
             try:
                 meta = await rt.dehydrator.analyze(content_str)
             except Exception as e:
-                metadata_fallback = True
+                fallback = True
                 rt.logger.warning(
                     "grow items metadata analysis failed; preserving raw content with local defaults / "
                     f"grow items 打标失败，使用本地默认元数据并原样保存正文: {type(e).__name__}: {e}"
@@ -171,18 +172,35 @@ async def grow_items(items: list) -> str:
                 grow_batch_id=batch_id,
                 raw_merge=True,  # 逐字追加，合并不压缩
             )
-            if embed_warn and embed_warn not in embed_warnings:
-                embed_warnings.append(embed_warn)
-            if is_merged:
-                results.append(f"📎{result_name}")
-                merged += 1
-            else:
-                results.append(f"📝{result_name}")
-                created += 1
+            if not is_merged:
                 asyncio.create_task(check_duplicate_for(result_name, content_str))
-        except Exception as e:
-            rt.logger.warning(f"grow items 条目处理失败 / verbatim item failed: {e}")
+            line = f"📎{result_name}" if is_merged else f"📝{result_name}"
+            return line, embed_warn, is_merged, fallback
+
+    outcomes = await asyncio.gather(
+        *(_process_one(c) for c in clean), return_exceptions=True
+    )
+
+    results = []
+    created = 0
+    merged = 0
+    embed_warnings = []
+    metadata_fallback = False
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            rt.logger.warning(f"grow items 条目处理失败 / verbatim item failed: {outcome}")
             results.append("⚠️")
+            continue
+        line, embed_warn, is_merged, fallback = outcome
+        results.append(line)
+        if fallback:
+            metadata_fallback = True
+        if embed_warn and embed_warn not in embed_warnings:
+            embed_warnings.append(embed_warn)
+        if line.startswith("📎"):
+            merged += 1
+        elif line.startswith("📝"):
+            created += 1
 
     asyncio.create_task(check_plan_resolution("\n".join(clean)))
     summary = f"{len(clean)}条(预拆分·逐字)|新{created}合{merged} batch:{batch_id}\n" + "\n".join(results)
