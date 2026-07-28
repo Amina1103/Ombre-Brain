@@ -36,6 +36,9 @@ from .._common import (
     check_plan_resolution,
 )
 
+# grow_items 后台入库任务的强引用，防止 asyncio 垃圾回收半途掐掉
+_BG_TASKS: set = set()
+
 
 async def grow_core(content: str) -> str:
     try:
@@ -113,6 +116,8 @@ async def grow_items(items: list) -> str:
     - 每条只调 analyze() 打元数据（domain/valence/arousal/tags/name），不碰正文；
     - 合并走 raw_merge=True（原文追加，不 LLM 压缩老+新），消除第三次失真。
     存储沿用 grow 风格：共享 grow_batch_id，source_tool=grow，dashboard 仍可按批展示。
+
+    Amina 定制：秒回批次号，打标+查重+落桶全在后台完成（不受代理 100s 上限影响）。
     """
     payload_err = check_grow_items_payload(items)
     if payload_err:
@@ -134,18 +139,29 @@ async def grow_items(items: list) -> str:
 
     batch_id = f"g_{uuid.uuid4().hex[:12]}"
 
-    # Amina 定制: 逐条串行时每条要等一次 analyze LLM 调用（单次可达 60s），
-    # N 条相加轻松超过 MCP 客户端超时 → 写入成功但返回被掐断。
-    # 改为有限并发（与 hooks 的脱水修法同款），总耗时 ≈ 最慢一条。
+    # Amina 定制: 立即返回 + 后台入库。前史两阶段——串行逐条超客户端超时;
+    # 改有限并发后打标虽并发, 但入库段(查重搜索/精确匹配/写盘)仍串行 ~7s/条,
+    # 7 条 = 106s, 超过 Cloudflare 代理 100s 无首字节上限 → 服务器写入成功
+    # 但返回在路上被掐, 客户端报 timeout。治本: 不花钱的大小校验当场做完,
+    # 打标+查重+落桶全部转后台, 响应耗时与条数彻底解耦。
+    # 后台完成后打 op=grow phase=bg_done 日志留痕。
+    rejected: list[str] = []
+    valid: list[str] = []
+    for s in clean:
+        size_err = check_content_size(s)
+        if size_err:
+            rejected.append(f"⚠️（{size_err}）")
+        else:
+            valid.append(s)
+    if not valid:
+        return "items 全部超限，未创建任何桶。\n" + "\n".join(rejected)
+
     sem = asyncio.Semaphore(8)
 
     async def _process_one(content_str: str) -> tuple[str, str, bool, bool]:
-        """返回 (结果行, embed警告, 是否合并, 是否打标降级)；结果行以 ⚠ 开头表示未入库。"""
+        """返回 (结果行, embed警告, 是否合并, 是否打标降级)。"""
         async with sem:
             fallback = False
-            size_err = check_content_size(content_str)
-            if size_err:
-                return f"⚠️（{size_err}）", "", False, False
             # 只打标，不改写正文；打标失败（如 API key 未配置）不应丢正文——
             # 落回本地中性元数据，与 hold 的降级行为保持一致（见 tools/hold/core.py）。
             try:
@@ -177,35 +193,44 @@ async def grow_items(items: list) -> str:
             line = f"📎{result_name}" if is_merged else f"📝{result_name}"
             return line, embed_warn, is_merged, fallback
 
-    outcomes = await asyncio.gather(
-        *(_process_one(c) for c in clean), return_exceptions=True
+    async def _process_batch() -> None:
+        outcomes = await asyncio.gather(
+            *(_process_one(c) for c in valid), return_exceptions=True
+        )
+        created = 0
+        merged = 0
+        failed = 0
+        embed_warnings = []
+        metadata_fallback = False
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                rt.logger.warning(f"grow items 条目处理失败 / verbatim item failed: {outcome}")
+                failed += 1
+                continue
+            line, embed_warn, is_merged, fallback = outcome
+            if fallback:
+                metadata_fallback = True
+            if embed_warn and embed_warn not in embed_warnings:
+                embed_warnings.append(embed_warn)
+            if is_merged:
+                merged += 1
+            else:
+                created += 1
+        rt.logger.info(
+            f"op=grow phase=bg_done batch={batch_id} created={created} merged={merged} "
+            f"failed={failed} metadata_fallback={metadata_fallback}"
+            + (f" embed_warn={embed_warnings[0]}" if embed_warnings else "")
+        )
+
+    task = asyncio.create_task(_process_batch())
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+
+    asyncio.create_task(check_plan_resolution("\n".join(valid)))
+    summary = (
+        f"🌱 已收妥{len(valid)}条(预拆分·逐字) batch:{batch_id}\n"
+        "正在后台打标+查重+落桶，无需等待；稍后可在 dashboard 按批次查看。"
     )
-
-    results = []
-    created = 0
-    merged = 0
-    embed_warnings = []
-    metadata_fallback = False
-    for outcome in outcomes:
-        if isinstance(outcome, BaseException):
-            rt.logger.warning(f"grow items 条目处理失败 / verbatim item failed: {outcome}")
-            results.append("⚠️")
-            continue
-        line, embed_warn, is_merged, fallback = outcome
-        results.append(line)
-        if fallback:
-            metadata_fallback = True
-        if embed_warn and embed_warn not in embed_warnings:
-            embed_warnings.append(embed_warn)
-        if line.startswith("📎"):
-            merged += 1
-        elif line.startswith("📝"):
-            created += 1
-
-    asyncio.create_task(check_plan_resolution("\n".join(clean)))
-    summary = f"{len(clean)}条(预拆分·逐字)|新{created}合{merged} batch:{batch_id}\n" + "\n".join(results)
-    if embed_warnings:
-        summary += f"\n⚠️ {embed_warnings[0]}"
-    if metadata_fallback:
-        summary += "\n⚠️ 打标 API 暂不可用：正文已逐字保存，未做任何压缩；元数据暂用本地中性值。"
+    if rejected:
+        summary += "\n以下条目超限，未入库：\n" + "\n".join(rejected)
     return summary
