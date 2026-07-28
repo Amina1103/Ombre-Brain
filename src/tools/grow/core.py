@@ -39,6 +39,9 @@ from .._common import (
 # grow_items 后台入库任务的强引用，防止 asyncio 垃圾回收半途掐掉
 _BG_TASKS: set = set()
 
+# 同步等待上限: Cloudflare 代理 100s 无首字节即掐线, 留 10s 安全边界
+_ITEMS_SYNC_DEADLINE_SECONDS = 90
+
 
 async def grow_core(content: str) -> str:
     try:
@@ -117,7 +120,8 @@ async def grow_items(items: list) -> str:
     - 合并走 raw_merge=True（原文追加，不 LLM 压缩老+新），消除第三次失真。
     存储沿用 grow 风格：共享 grow_batch_id，source_tool=grow，dashboard 仍可按批展示。
 
-    Amina 定制：秒回批次号，打标+查重+落桶全在后台完成（不受代理 100s 上限影响）。
+    Amina 定制：最多同步等 90s——干完了就返回真结果（每条新建/合并）；
+    没干完则返回收据（批次号+已收妥），剩余处理转后台（不受代理 100s 上限影响）。
     """
     payload_err = check_grow_items_payload(items)
     if payload_err:
@@ -139,12 +143,12 @@ async def grow_items(items: list) -> str:
 
     batch_id = f"g_{uuid.uuid4().hex[:12]}"
 
-    # Amina 定制: 立即返回 + 后台入库。前史两阶段——串行逐条超客户端超时;
-    # 改有限并发后打标虽并发, 但入库段(查重搜索/精确匹配/写盘)仍串行 ~7s/条,
-    # 7 条 = 106s, 超过 Cloudflare 代理 100s 无首字节上限 → 服务器写入成功
-    # 但返回在路上被掐, 客户端报 timeout。治本: 不花钱的大小校验当场做完,
-    # 打标+查重+落桶全部转后台, 响应耗时与条数彻底解耦。
-    # 后台完成后打 op=grow phase=bg_done 日志留痕。
+    # Amina 定制: 同步等到 90s 上限, 超了才转后台。前史两阶段——串行逐条超
+    # 客户端超时; 改有限并发后打标虽并发, 但入库段(查重搜索/精确匹配/写盘)
+    # 仍串行 ~7s/条, 7 条 = 106s, 超过 Cloudflare 代理 100s 无首字节上限 →
+    # 服务器写入成功但返回在路上被掐, 客户端报 timeout。
+    # 混合方案(她拍板): 90s 内干完 → 返回真结果(每条新建/合并);
+    # 没干完 → 返回收据(批次号), 处理继续在后台跑完, 打 phase=bg_done 日志留痕。
     rejected: list[str] = []
     valid: list[str] = []
     for s in clean:
@@ -193,10 +197,11 @@ async def grow_items(items: list) -> str:
             line = f"📎{result_name}" if is_merged else f"📝{result_name}"
             return line, embed_warn, is_merged, fallback
 
-    async def _process_batch() -> None:
+    async def _process_batch() -> str:
         outcomes = await asyncio.gather(
             *(_process_one(c) for c in valid), return_exceptions=True
         )
+        results = []
         created = 0
         merged = 0
         failed = 0
@@ -205,9 +210,11 @@ async def grow_items(items: list) -> str:
         for outcome in outcomes:
             if isinstance(outcome, BaseException):
                 rt.logger.warning(f"grow items 条目处理失败 / verbatim item failed: {outcome}")
+                results.append("⚠️")
                 failed += 1
                 continue
             line, embed_warn, is_merged, fallback = outcome
+            results.append(line)
             if fallback:
                 metadata_fallback = True
             if embed_warn and embed_warn not in embed_warnings:
@@ -221,16 +228,27 @@ async def grow_items(items: list) -> str:
             f"failed={failed} metadata_fallback={metadata_fallback}"
             + (f" embed_warn={embed_warnings[0]}" if embed_warnings else "")
         )
+        summary = f"{len(valid)}条(预拆分·逐字)|新{created}合{merged} batch:{batch_id}\n" + "\n".join(results)
+        if embed_warnings:
+            summary += f"\n⚠️ {embed_warnings[0]}"
+        if metadata_fallback:
+            summary += "\n⚠️ 打标 API 暂不可用：正文已逐字保存，未做任何压缩；元数据暂用本地中性值。"
+        return summary
 
     task = asyncio.create_task(_process_batch())
     _BG_TASKS.add(task)
     task.add_done_callback(_BG_TASKS.discard)
 
     asyncio.create_task(check_plan_resolution("\n".join(valid)))
-    summary = (
-        f"🌱 已收妥{len(valid)}条(预拆分·逐字) batch:{batch_id}\n"
-        "正在后台打标+查重+落桶，无需等待；稍后可在 dashboard 按批次查看。"
-    )
+
+    done, _ = await asyncio.wait({task}, timeout=_ITEMS_SYNC_DEADLINE_SECONDS)
+    if task in done:
+        summary = task.result()
+    else:
+        summary = (
+            f"🌱 已收妥{len(valid)}条(预拆分·逐字) batch:{batch_id}\n"
+            "条数较多，打标+查重+落桶正在后台继续（写入不受影响）；稍后可在 dashboard 按批次查看。"
+        )
     if rejected:
         summary += "\n以下条目超限，未入库：\n" + "\n".join(rejected)
     return summary
