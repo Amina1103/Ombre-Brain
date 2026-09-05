@@ -59,6 +59,11 @@ def render_stored_bucket(
     会把别人说的话读成用户说的。移出而不是留一份，是因为留一份就等于返回两次，
     其中没有归属标记的那一次正是要防的那一次。
     """
+    # Amina 定制(第8项): 每条结果带 [创建日] 前缀 — 记忆要带时间上下文
+    # (与 dream 的 创建: 字段、import 时间戳同一设计意图)。集中在此处, 覆盖全部 breath 调用点。
+    created = str((bucket.get("metadata", {}) or {}).get("created", ""))[:10]
+    if created:
+        metadata_header = f"[{created}] {metadata_header}"
     content = strip_wikilinks(stored_bucket_content(bucket))
     content, third_party = split_third_party_speech(
         content,

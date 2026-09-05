@@ -31,6 +31,12 @@ from errors import ToolInputError
 import asyncio
 import uuid
 
+# Amina 定制(第15项): grow_items 后台入库任务的强引用，防止 asyncio 垃圾回收半途掐掉
+_BG_TASKS: set = set()
+
+# 同步等待上限: Cloudflare 代理 100s 无首字节即掐线, 留 10s 安全边界
+_ITEMS_SYNC_DEADLINE_SECONDS = 90
+
 from utils import normalize_memory_title
 
 try:
@@ -148,7 +154,8 @@ async def grow_core(content: str, test_data: bool = False) -> str:
         return {
             "line": (
                 f"📎{result_name}" if is_merged
-                else f"📝{item.get('name', result_name)}"
+                # Amina 定制(第12项): 新建桶带出 bucket_id, 让 feel(source_bucket=...) 不用再 breath 搜一趟
+                else f"📝{item.get('name', result_name)}→{result_name}"
             ),
             "merged": is_merged,
             "embed_warn": embed_warn,
@@ -331,41 +338,61 @@ async def grow_items(items: list, source_content: str = "", test_data: bool = Fa
             # 新建时回标题而不是 bucket_id：与 digest 路径保持一致。
             # 之前这里回 12 位 hex，调用方光看返回无法确认存进去的是什么，
             # 还得再查一次目录——同一个工具的两条路径不该一条人能读、一条不能。
-            "line": f"📎{result_name}" if is_merged else f"📝{final_title or result_name}",
+            # Amina 定制(第12项): 新建同样露出 bucket_id (标题→id), 上游只回标题
+            "line": f"📎{result_name}" if is_merged else f"📝{final_title or result_name}→{result_name}",
             "merged": is_merged,
             "embed_warn": embed_warn,
             "dup_check": None if is_merged else (result_name, content_str),
             "metadata_fallback": item_metadata_fallback,
         }
 
-    outcomes = await asyncio.gather(*(_process_item(item) for item in clean))
+    # Amina 定制(第15项, 保险): 最多同步等 90s——干完了就返回真结果(每条新建/合并);
+    # 没干完则返回收据(批次号+已收妥), 剩余处理转后台跑完(Cloudflare 代理 100s 无首字节即掐线)。
+    # 上游 retry_guard 会把同请求的重发复用到这个进行中的任务/已回收据, 不会重复入库。
+    async def _finish_batch() -> str:
+        outcomes = await asyncio.gather(*(_process_item(item) for item in clean))
 
-    results = []
-    created = 0
-    merged = 0
-    embed_warnings = []
-    metadata_fallback = False
-    for outcome in outcomes:
-        results.append(outcome["line"])
-        if outcome.get("merged") is True:
-            merged += 1
-        elif outcome.get("merged") is False:
-            created += 1
-        embed_warn = outcome.get("embed_warn")
-        if embed_warn and embed_warn not in embed_warnings:
-            embed_warnings.append(embed_warn)
-        if outcome.get("metadata_fallback"):
-            metadata_fallback = True
-        dup_check = outcome.get("dup_check")
-        if dup_check:
-            asyncio.create_task(check_duplicate_for(*dup_check))
+        results = []
+        created = 0
+        merged = 0
+        embed_warnings = []
+        metadata_fallback = False
+        for outcome in outcomes:
+            results.append(outcome["line"])
+            if outcome.get("merged") is True:
+                merged += 1
+            elif outcome.get("merged") is False:
+                created += 1
+            embed_warn = outcome.get("embed_warn")
+            if embed_warn and embed_warn not in embed_warnings:
+                embed_warnings.append(embed_warn)
+            if outcome.get("metadata_fallback"):
+                metadata_fallback = True
+            dup_check = outcome.get("dup_check")
+            if dup_check:
+                asyncio.create_task(check_duplicate_for(*dup_check))
 
-    asyncio.create_task(check_plan_resolution("\n".join(item["content"] for item in clean)))
-    summary = f"{len(clean)}条(预拆分·逐字)|新{created}合{merged} batch:{batch_id}\n" + "\n".join(results)
-    if embed_warnings:
-        summary += f"\n⚠️ {embed_warnings[0]}"
-    if metadata_fallback:
-        summary += "\n⚠️ 打标 API 暂不可用：正文已逐字保存，未做任何压缩；元数据暂用本地中性值。"
-        if any(not (item.get("title") or "").strip() for item in clean):
-            summary += " 无标题的桶需先在 Dashboard 设置标题。"
-    return summary
+        asyncio.create_task(check_plan_resolution("\n".join(item["content"] for item in clean)))
+        summary = f"{len(clean)}条(预拆分·逐字)|新{created}合{merged} batch:{batch_id}\n" + "\n".join(results)
+        if embed_warnings:
+            summary += f"\n⚠️ {embed_warnings[0]}"
+        if metadata_fallback:
+            summary += "\n⚠️ 打标 API 暂不可用：正文已逐字保存，未做任何压缩；元数据暂用本地中性值。"
+            if any(not (item.get("title") or "").strip() for item in clean):
+                summary += " 无标题的桶需先在 Dashboard 设置标题。"
+        rt.logger.info(
+            f"op=grow phase=bg_done batch={batch_id} created={created} merged={merged} "
+            f"metadata_fallback={metadata_fallback}"
+        )
+        return summary
+
+    task = asyncio.create_task(_finish_batch())
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    done, _ = await asyncio.wait({task}, timeout=_ITEMS_SYNC_DEADLINE_SECONDS)
+    if task in done:
+        return task.result()
+    return (
+        f"🌱 已收妥{len(clean)}条(预拆分·逐字) batch:{batch_id}\n"
+        "条数较多，打标+查重+落桶正在后台继续（写入不受影响）；稍后可在 dashboard 按批次查看。"
+    )
