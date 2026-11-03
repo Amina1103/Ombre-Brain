@@ -1320,7 +1320,7 @@ async def _pinned_budget_report() -> dict[str, Any]:
         "limit_tokens": limit,
         "largest_entry_tokens": largest,
         "max_pinned": int(
-            (sh.config.get("limits", {}) or {}).get("max_pinned") or 20
+            (sh.config.get("limits", {}) or {}).get("max_pinned") or 40
         ),
     }
 

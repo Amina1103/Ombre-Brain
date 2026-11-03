@@ -216,7 +216,7 @@ limits:
   max_query_bytes: 16384          # 16KB breath/letter query cap; 0 disables
   max_metadata_bytes: 16384       # combined tool metadata/filter cap; 0 disables
   max_grow_items: 100             # pre-split/digest item count cap; 0 disables
-  max_pinned: 20                  # max pinned buckets; 0 disables check
+  max_pinned: 40                  # max pinned buckets; 0 disables check
   max_protected: 20               # protected 桶上限；0 关闭检查
 
 # --- them: 我对其他人的认识 / knowledge about other people ---

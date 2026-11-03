@@ -62,7 +62,7 @@ _EMBED_WARN = (
 
 # --- 桶与配额默认值 ---
 _DEFAULT_MAX_BUCKET_BYTES = 50 * 1024  # 50 KB 单桶上限（超过建议走 grow 拆存）
-_DEFAULT_MAX_PINNED = 20               # pinned 桶上限（哲学边界：重要必须稀缺）；与 config.example.yaml limits.max_pinned 同步
+_DEFAULT_MAX_PINNED = 40               # pinned 桶上限（哲学边界：重要必须稀缺）；与 config.example.yaml limits.max_pinned 同步
 _DEFAULT_MAX_PROTECTED = 20            # protected 桶独立上限；与 config.example.yaml limits.max_protected 同步
 _DEFAULT_MAX_GROW_INPUT_BYTES = 2 * 1024 * 1024
 _DEFAULT_MAX_QUERY_BYTES = 16 * 1024
@@ -79,12 +79,12 @@ _GROW_ITEM_FIELDS = frozenset({
 })
 
 # --- importance 审计范围排除的类型（is_importance_audit_candidate 复用）---
-# 注意：这不是配额机制。rule.md §2 的稀缺性哲学由 pinned(20)/anchor(24) 两个
+# 注意：这不是配额机制。rule.md §2 的稀缺性哲学由 pinned(40)/anchor(24) 两个
 # 结构承担；importance 只是普通评分字段，不再对 >=9 设硬配额/自动降级。
 _HIGH_IMP_EXEMPT_TYPES = frozenset({"feel", "plan", "letter", "archived"})
 
 # --- pinned 软阈值 ---
-_PINNED_SOFT_GAP = 2                   # “软阈值 = cap - GAP”；cap=20 → soft=18
+_PINNED_SOFT_GAP = 2                   # “软阈值 = cap - GAP”；cap=40 → soft=38
 
 # --- check_duplicate_for / check_plan_resolution ---
 _DUP_DEFAULT_THRESHOLD = 0.95          # 向量相似 >= 该值 → 标为疑似重复
@@ -237,7 +237,7 @@ def _push_warning_safe(code: str, msg: str) -> None:
 
 
 def limits_cfg() -> dict:
-    """读 config.limits 段；缺省为 50KB 单桶 / 20 pinned / 20 protected。"""
+    """读 config.limits 段；缺省为 50KB 单桶 / 40 pinned / 20 protected。"""
     config = rt.config if isinstance(rt.config, dict) else {}
     return config.get("limits", {}) or {}
 
@@ -732,7 +732,7 @@ async def check_protected_quota() -> str | None:
 # ------------------------------------------------------------
 # 设计：把"配额预警"和"自动降级"两步分开，分别对应 W 与 I。
 # 业务代码调用前者拿到提示后，自动经 _push_warning_safe 送去 MCP 返回末尾。
-# rule.md §2 的稀缺性哲学由 pinned(20)/anchor(24) 两个结构承担；
+# rule.md §2 的稀缺性哲学由 pinned(40)/anchor(24) 两个结构承担；
 # importance 只是普通评分字段，这里不再对 importance>=9 设硬配额。
 # ============================================================
 
@@ -780,7 +780,7 @@ async def enforce_pinned_quota(pinned: bool) -> bool:
         return False
     cap = max_pinned()
     cur = await count_pinned()
-    # 软阈值 = cap - GAP；cap=20、GAP=2 → soft=18。cap 太小（≤GAP）退化为硬上限。
+    # 软阈值 = cap - GAP；cap=40、GAP=2 → soft=38。cap 太小（≤GAP）退化为硬上限。
     soft = max(1, cap - _PINNED_SOFT_GAP) if cap > _PINNED_SOFT_GAP else cap
     if cap > 0 and cur >= cap:
         rt.logger.info(

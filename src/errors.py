@@ -267,7 +267,7 @@ ERROR_CODES: dict[str, ErrorSpec] = {
         title_zh="pinned 配额接近上限",
         title_en="pinned quota near cap",
         suggestion_zh=(
-            "pinned 桶接近上限（默认 18/20，硬上限 20，可在 config.limits.max_pinned 调整）。"
+            "pinned 桶接近上限（默认 38/40，硬上限 40，可在 config.limits.max_pinned 调整）。"
             "建议先用 trace(bucket_id, pinned=0) 取消不再核心的钉选，再钉新桶。"
         ),
     ),
@@ -305,7 +305,7 @@ ERROR_CODES: dict[str, ErrorSpec] = {
         title_en="pinned auto-unset (pinned quota exceeded)",
         suggestion_zh=(
             "★ 这是 OB 自作主张帮你做的事 ★\n"
-            "pinned 桶已达硬上限（默认 20，可在 config.limits.max_pinned 调整），本次未钉成功（保留为普通桶）。\n"
+            "pinned 桶已达硬上限（默认 40，可在 config.limits.max_pinned 调整），本次未钉成功（保留为普通桶）。\n"
             "建议：用 breath 看一遍当前 pinned 列表，把不再属于「永久核心准则」的"
             "用 trace(bucket_id, pinned=0) 取消，再来钉这条。"
         ),

@@ -7,7 +7,7 @@ tools/hold/pinned.py — hold(pinned=True) 分支
 permanent 目录，不衰减、不会被合并掉。
 
 关键行为：
-- 先做 pinned 数量配额检查（默认 20 个上限），超了就拒绝并提示
+- 先做 pinned 数量配额检查（默认 40 个上限），超了就拒绝并提示
 - 仍然走 LLM analyze 拿 domain/valence/arousal/tags/suggested_name；
   她/他显式传入的 valence/arousal 优先
 - type="permanent" + pinned=True 双重标记

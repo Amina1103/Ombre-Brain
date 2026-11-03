@@ -1404,13 +1404,15 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 
 **新建时初始字段**：`activation_count = 0`（B-04 修复值；曾经是 1 导致冷启动检测失效）；`resolved/pinned/protected/digested` 默认不显式写入，仅在变更时才出现在 frontmatter 中。
 
-**permanent 与 pinned 的配额关系**：配额唯一真相是 `metadata.pinned=True`。`type=="permanent"` 是独立的固化类型，不会仅因目录或 type 占用 `limits.max_pinned`（默认 20）；只有真正 pinned 的桶占配额并锁定 importance=10。`feel` / `plan` / `letter` 同样不占该配额。
+> **Amina 分支定制 #16（2026-11-03，后续换基保留）**：上游 3.6.13 的 pinned 默认上限为 20，本分支提高到 40，接近上限提醒阈值随之为 38。同步代码默认值、配置示例、系统诊断与提示；已有记忆及钉选保持原样。显式保存的 `limits.max_pinned` 仍优先于默认值，线上配置若为 20，部署时须单独改为 40 才生效。
+
+**permanent 与 pinned 的配额关系**：配额唯一真相是 `metadata.pinned=True`。`type=="permanent"` 是独立的固化类型，不会仅因目录或 type 占用 `limits.max_pinned`（默认 40）；只有真正 pinned 的桶占配额并锁定 importance=10。`feel` / `plan` / `letter` 同样不占该配额。
 
 `pinned` 计数按逻辑 bucket ID 去重，并通过 `parse_bool` 解释历史 YAML 布尔值；archived/deleted/tombstone 是终态，不占 pinned 名额，也不能通过常规 `BucketManager.update()`、Dashboard 或导入复核重新激活。
 
 `protected` 使用独立 `limits.max_protected`（默认 20）。计数只看活跃、非终态且 `metadata.protected=True` 的逻辑桶，按 bucket ID 去重；显式 permanent 和 pinned 不会自动占用 protected 配额。False→True 的检查与落盘必须在同一 `protected` quota turn 内完成，满额必须硬拒绝。
 
-**importance 不设硬配额**：rule.md §2 的稀缺性哲学由 `pinned`（20）/`anchor`（24）两个结构承担；`importance` 只是普通评分字段，`importance>=9` 没有硬上限、软警告或自动降级，`is_importance_audit_candidate()` 只用来定义 `breath_advanced(importance_min=...)` 的可审计范围，不再是配额口径。
+**importance 不设硬配额**：rule.md §2 的稀缺性哲学由 `pinned`（40）/`anchor`（24）两个结构承担；`importance` 只是普通评分字段，`importance>=9` 没有硬上限、软警告或自动降级，`is_importance_audit_candidate()` 只用来定义 `breath_advanced(importance_min=...)` 的可审计范围，不再是配额口径。
 
 (实现注意：`pinned` 是需要主动重见的核心准则；`protected` 只防衰减、不主动浮现。两者互斥，单桶不能同时为 True；均可由 trace 显式修改，但使用独立配额，不得再把 protected 当作 pinned 注入。)
 
@@ -1451,7 +1453,7 @@ normalized = total / w_sum × 100   # 归一化到 0~100
 | `hooks.token` | `""` | `/breath-hook` 的 token；也可用 `OMBRE_HOOK_TOKEN`，仅通过请求头传递 |
 | `hooks.allow_public` | `false` | 是否允许 hook 无鉴权访问；也可用 `OMBRE_HOOK_ALLOW_PUBLIC=true`，仅建议在外层已有鉴权时开启 |
 | `limits.max_bucket_bytes` | `51200` (50KB) | 单桶内容字节上限（iter 1.6 §5）；0 禁用 |
-| `limits.max_pinned` | `20` | `metadata.pinned=True` 桶数量上限；显式 permanent 不占；0 禁用 |
+| `limits.max_pinned` | `40` | `metadata.pinned=True` 桶数量上限；显式 permanent 不占；0 禁用 |
 | `limits.max_protected` | `20` | 活跃、非终态的 `metadata.protected=True` 逻辑桶上限；按 ID 去重；0 禁用 |
 | `limits.max_mcp_request_bytes` | `4194304` | `/mcp` 请求体上限；0 禁用 |
 | `limits.max_management_request_bytes` | `4194304` | Dashboard/OAuth 普通写请求上限；导入上传使用独立上限；0 禁用 |
